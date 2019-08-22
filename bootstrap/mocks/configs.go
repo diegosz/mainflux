@@ -134,12 +134,12 @@ func (crm *configRepositoryMock) RetrieveAll(key string, filter bootstrap.Filter
 	}
 }
 
-func (crm *configRepositoryMock) RetrieveByExternalID(externalKey, externalID string) (bootstrap.Config, error) {
+func (crm *configRepositoryMock) RetrieveByExternalID(externalID string) (bootstrap.Config, error) {
 	crm.mu.Lock()
 	defer crm.mu.Unlock()
 
 	for _, cfg := range crm.configs {
-		if cfg.ExternalID == externalID && cfg.ExternalKey == externalKey {
+		if cfg.ExternalID == externalID {
 			return cfg, nil
 		}
 	}
@@ -159,6 +159,27 @@ func (crm *configRepositoryMock) Update(config bootstrap.Config) error {
 	cfg.Name = config.Name
 	cfg.Content = config.Content
 	crm.configs[config.MFThing] = cfg
+
+	return nil
+}
+
+func (crm *configRepositoryMock) UpdateCert(owner, thingKey, clientCert, clientKey, caCert string) error {
+	crm.mu.Lock()
+	defer crm.mu.Unlock()
+	var forUpdate bootstrap.Config
+	for _, v := range crm.configs {
+		if v.MFKey == thingKey && v.Owner == owner {
+			forUpdate = v
+			break
+		}
+	}
+	if _, ok := crm.configs[forUpdate.MFThing]; !ok {
+		return bootstrap.ErrNotFound
+	}
+	forUpdate.ClientCert = clientCert
+	forUpdate.ClientKey = clientKey
+	forUpdate.CACert = caCert
+	crm.configs[forUpdate.MFThing] = forUpdate
 
 	return nil
 }

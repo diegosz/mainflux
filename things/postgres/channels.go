@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2018
+// Copyright (c) 2019
 // Mainflux
 //
 // SPDX-License-Identifier: Apache-2.0
@@ -8,40 +8,35 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
+	"github.com/gofrs/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
-	"github.com/mainflux/mainflux/logger"
 	"github.com/mainflux/mainflux/things"
 )
 
 var _ things.ChannelRepository = (*channelRepository)(nil)
 
-const (
-	errDuplicate = "unique_violation"
-	errFK        = "foreign_key_violation"
-	errInvalid   = "invalid_text_representation"
-)
-
 type channelRepository struct {
-	db  *sqlx.DB
-	log logger.Logger
+	db *sqlx.DB
 }
 
 // NewChannelRepository instantiates a PostgreSQL implementation of channel
 // repository.
-func NewChannelRepository(db *sqlx.DB, log logger.Logger) things.ChannelRepository {
+func NewChannelRepository(db *sqlx.DB) things.ChannelRepository {
 	return &channelRepository{
-		db:  db,
-		log: log,
+		db: db,
 	}
 }
 
-func (cr channelRepository) Save(channel things.Channel) (string, error) {
-	q := `INSERT INTO channels (id, owner, name, metadata) VALUES (:id, :owner, :name, :metadata);`
+func (cr channelRepository) Save(_ context.Context, channel things.Channel) (string, error) {
+	q := `INSERT INTO channels (id, owner, name, metadata)
+        VALUES (:id, :owner, :name, :metadata);`
 
 	dbch, err := toDBChannel(channel)
 	if err != nil {
@@ -50,8 +45,11 @@ func (cr channelRepository) Save(channel things.Channel) (string, error) {
 
 	if _, err := cr.db.NamedExec(q, dbch); err != nil {
 		pqErr, ok := err.(*pq.Error)
-		if ok && errInvalid == pqErr.Code.Name() {
-			return "", things.ErrMalformedEntity
+		if ok {
+			switch pqErr.Code.Name() {
+			case errInvalid, errTruncation:
+				return "", things.ErrMalformedEntity
+			}
 		}
 
 		return "", err
@@ -60,7 +58,7 @@ func (cr channelRepository) Save(channel things.Channel) (string, error) {
 	return channel.ID, nil
 }
 
-func (cr channelRepository) Update(channel things.Channel) error {
+func (cr channelRepository) Update(_ context.Context, channel things.Channel) error {
 	q := `UPDATE channels SET name = :name, metadata = :metadata WHERE owner = :owner AND id = :id;`
 
 	dbch, err := toDBChannel(channel)
@@ -71,8 +69,11 @@ func (cr channelRepository) Update(channel things.Channel) error {
 	res, err := cr.db.NamedExec(q, dbch)
 	if err != nil {
 		pqErr, ok := err.(*pq.Error)
-		if ok && errInvalid == pqErr.Code.Name() {
-			return things.ErrMalformedEntity
+		if ok {
+			switch pqErr.Code.Name() {
+			case errInvalid, errTruncation:
+				return things.ErrMalformedEntity
+			}
 		}
 
 		return err
@@ -90,7 +91,7 @@ func (cr channelRepository) Update(channel things.Channel) error {
 	return nil
 }
 
-func (cr channelRepository) RetrieveByID(owner, id string) (things.Channel, error) {
+func (cr channelRepository) RetrieveByID(_ context.Context, owner, id string) (things.Channel, error) {
 	q := `SELECT name, metadata FROM channels WHERE id = $1 AND owner = $2;`
 	dbch := dbChannel{
 		ID:    id,
@@ -108,18 +109,26 @@ func (cr channelRepository) RetrieveByID(owner, id string) (things.Channel, erro
 	return toChannel(dbch)
 }
 
-func (cr channelRepository) RetrieveAll(owner string, offset, limit uint64) things.ChannelsPage {
-	q := `SELECT id, name, metadata FROM channels WHERE owner = :owner ORDER BY id LIMIT :limit OFFSET :offset;`
+func (cr channelRepository) RetrieveAll(_ context.Context, owner string, offset, limit uint64, name string) (things.ChannelsPage, error) {
+	name = strings.ToLower(name)
+	nq := ""
+	if name != "" {
+		name = fmt.Sprintf(`%%%s%%`, name)
+		nq = `AND LOWER(name) LIKE :name`
+	}
+
+	q := fmt.Sprintf(`SELECT id, name, metadata FROM channels
+	      WHERE owner = :owner %s ORDER BY id LIMIT :limit OFFSET :offset;`, nq)
 
 	params := map[string]interface{}{
 		"owner":  owner,
 		"limit":  limit,
 		"offset": offset,
+		"name":   name,
 	}
 	rows, err := cr.db.NamedQuery(q, params)
 	if err != nil {
-		cr.log.Error(fmt.Sprintf("Failed to retrieve channels due to %s", err))
-		return things.ChannelsPage{}
+		return things.ChannelsPage{}, err
 	}
 	defer rows.Close()
 
@@ -127,24 +136,33 @@ func (cr channelRepository) RetrieveAll(owner string, offset, limit uint64) thin
 	for rows.Next() {
 		dbch := dbChannel{Owner: owner}
 		if err := rows.StructScan(&dbch); err != nil {
-			cr.log.Error(fmt.Sprintf("Failed to read retrieved channel due to %s", err))
-			return things.ChannelsPage{}
+			return things.ChannelsPage{}, err
 		}
 		ch, err := toChannel(dbch)
 		if err != nil {
-			cr.log.Error(fmt.Sprintf("Failed to read retrieved channel due to %s", err))
-			return things.ChannelsPage{}
+			return things.ChannelsPage{}, err
 		}
 
 		items = append(items, ch)
 	}
 
-	q = `SELECT COUNT(*) FROM channels WHERE owner = $1;`
+	cq := ""
+	if name != "" {
+		cq = `AND LOWER(name) LIKE $2`
+	}
 
-	var total uint64
-	if err := cr.db.Get(&total, q, owner); err != nil {
-		cr.log.Error(fmt.Sprintf("Failed to count channels due to %s", err))
-		return things.ChannelsPage{}
+	q = fmt.Sprintf(`SELECT COUNT(*) FROM channels WHERE owner = $1 %s;`, cq)
+
+	total := uint64(0)
+	switch name {
+	case "":
+		if err := cr.db.Get(&total, q, owner); err != nil {
+			return things.ChannelsPage{}, err
+		}
+	default:
+		if err := cr.db.Get(&total, q, owner, name); err != nil {
+			return things.ChannelsPage{}, err
+		}
 	}
 
 	page := things.ChannelsPage{
@@ -156,10 +174,15 @@ func (cr channelRepository) RetrieveAll(owner string, offset, limit uint64) thin
 		},
 	}
 
-	return page
+	return page, nil
 }
 
-func (cr channelRepository) RetrieveByThing(owner, thing string, offset, limit uint64) things.ChannelsPage {
+func (cr channelRepository) RetrieveByThing(_ context.Context, owner, thing string, offset, limit uint64) (things.ChannelsPage, error) {
+	// Verify if UUID format is valid to avoid internal Postgres error
+	if _, err := uuid.FromString(thing); err != nil {
+		return things.ChannelsPage{}, things.ErrNotFound
+	}
+
 	q := `SELECT id, name, metadata
 	      FROM channels ch
 	      INNER JOIN connections co
@@ -178,8 +201,7 @@ func (cr channelRepository) RetrieveByThing(owner, thing string, offset, limit u
 
 	rows, err := cr.db.NamedQuery(q, params)
 	if err != nil {
-		cr.log.Error(fmt.Sprintf("Failed to retrieve channels due to %s", err))
-		return things.ChannelsPage{}
+		return things.ChannelsPage{}, err
 	}
 	defer rows.Close()
 
@@ -187,14 +209,12 @@ func (cr channelRepository) RetrieveByThing(owner, thing string, offset, limit u
 	for rows.Next() {
 		dbch := dbChannel{Owner: owner}
 		if err := rows.StructScan(&dbch); err != nil {
-			cr.log.Error(fmt.Sprintf("Failed to read retrieved channel due to %s", err))
-			return things.ChannelsPage{}
+			return things.ChannelsPage{}, err
 		}
 
 		ch, err := toChannel(dbch)
 		if err != nil {
-			cr.log.Error(fmt.Sprintf("Failed to read retrieved channel due to %s", err))
-			return things.ChannelsPage{}
+			return things.ChannelsPage{}, err
 		}
 
 		items = append(items, ch)
@@ -208,8 +228,7 @@ func (cr channelRepository) RetrieveByThing(owner, thing string, offset, limit u
 
 	var total uint64
 	if err := cr.db.Get(&total, q, owner, thing); err != nil {
-		cr.log.Error(fmt.Sprintf("Failed to count channels due to %s", err))
-		return things.ChannelsPage{}
+		return things.ChannelsPage{}, err
 	}
 
 	return things.ChannelsPage{
@@ -219,10 +238,10 @@ func (cr channelRepository) RetrieveByThing(owner, thing string, offset, limit u
 			Offset: offset,
 			Limit:  limit,
 		},
-	}
+	}, nil
 }
 
-func (cr channelRepository) Remove(owner, id string) error {
+func (cr channelRepository) Remove(_ context.Context, owner, id string) error {
 	dbch := dbChannel{
 		ID:    id,
 		Owner: owner,
@@ -232,8 +251,8 @@ func (cr channelRepository) Remove(owner, id string) error {
 	return nil
 }
 
-func (cr channelRepository) Connect(owner, chanID, thingID string) error {
-	q := `INSERT INTO connections (channel_id, channel_owner, thing_id, thing_owner) 
+func (cr channelRepository) Connect(_ context.Context, owner, chanID, thingID string) error {
+	q := `INSERT INTO connections (channel_id, channel_owner, thing_id, thing_owner)
 	      VALUES (:channel, :owner, :thing, :owner);`
 
 	conn := dbConnection{
@@ -260,7 +279,7 @@ func (cr channelRepository) Connect(owner, chanID, thingID string) error {
 	return nil
 }
 
-func (cr channelRepository) Disconnect(owner, chanID, thingID string) error {
+func (cr channelRepository) Disconnect(_ context.Context, owner, chanID, thingID string) error {
 	q := `DELETE FROM connections
 	      WHERE channel_id = :channel AND channel_owner = :owner
 	      AND thing_id = :thing AND thing_owner = :owner`
@@ -288,27 +307,38 @@ func (cr channelRepository) Disconnect(owner, chanID, thingID string) error {
 	return nil
 }
 
-func (cr channelRepository) HasThing(chanID, key string) (string, error) {
+func (cr channelRepository) HasThing(_ context.Context, chanID, key string) (string, error) {
 	var thingID string
 
 	q := `SELECT id FROM things WHERE key = $1`
 	if err := cr.db.QueryRow(q, key).Scan(&thingID); err != nil {
-		cr.log.Error(fmt.Sprintf("Failed to obtain thing's ID due to %s", err))
 		return "", err
+
 	}
 
-	q = `SELECT EXISTS (SELECT 1 FROM connections WHERE channel_id = $1 AND thing_id = $2);`
-	exists := false
-	if err := cr.db.QueryRow(q, chanID, thingID).Scan(&exists); err != nil {
-		cr.log.Error(fmt.Sprintf("Failed to check thing existence due to %s", err))
+	if err := cr.hasThing(chanID, thingID); err != nil {
 		return "", err
-	}
-
-	if !exists {
-		return "", things.ErrUnauthorizedAccess
 	}
 
 	return thingID, nil
+}
+
+func (cr channelRepository) HasThingByID(_ context.Context, chanID, thingID string) error {
+	return cr.hasThing(chanID, thingID)
+}
+
+func (cr channelRepository) hasThing(chanID, thingID string) error {
+	q := `SELECT EXISTS (SELECT 1 FROM connections WHERE channel_id = $1 AND thing_id = $2);`
+	exists := false
+	if err := cr.db.QueryRow(q, chanID, thingID).Scan(&exists); err != nil {
+		return err
+	}
+
+	if !exists {
+		return things.ErrUnauthorizedAccess
+	}
+
+	return nil
 }
 
 type dbChannel struct {

@@ -82,6 +82,10 @@ func (es eventStore) Update(key string, cfg bootstrap.Config) error {
 	return nil
 }
 
+func (es eventStore) UpdateCert(key, thingKey, clientCert, clientKey, caCert string) error {
+	return es.svc.UpdateCert(key, thingKey, clientCert, clientKey, caCert)
+}
+
 func (es eventStore) UpdateConnections(key, id string, connections []string) error {
 	if err := es.svc.UpdateConnections(key, id, connections); err != nil {
 		return err
@@ -117,8 +121,8 @@ func (es eventStore) Remove(key, id string) error {
 	return nil
 }
 
-func (es eventStore) Bootstrap(externalKey, externalID string) (bootstrap.Config, error) {
-	cfg, err := es.svc.Bootstrap(externalKey, externalID)
+func (es eventStore) Bootstrap(externalKey, externalID string, secure bool) (bootstrap.Config, error) {
+	cfg, err := es.svc.Bootstrap(externalKey, externalID, secure)
 
 	ev := bootstrapEvent{
 		externalID: externalID,

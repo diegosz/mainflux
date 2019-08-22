@@ -8,6 +8,7 @@
 package redis_test
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -20,11 +21,12 @@ import (
 
 func TestThingSave(t *testing.T) {
 	thingCache := redis.NewThingCache(redisClient)
-	key := uuid.New().ID()
+	key, err := uuid.New().ID()
+	require.Nil(t, err, fmt.Sprintf("got unexpected error: %s", err))
 	id := "123"
 	id2 := "124"
 
-	err := thingCache.Save(key, id2)
+	err = thingCache.Save(context.Background(), key, id2)
 	require.Nil(t, err, fmt.Sprintf("Save thing to cache: expected nil got %s", err))
 
 	cases := []struct {
@@ -48,7 +50,7 @@ func TestThingSave(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		err := thingCache.Save(tc.key, tc.ID)
+		err := thingCache.Save(context.Background(), tc.key, tc.ID)
 		assert.Nil(t, err, fmt.Sprintf("%s: expected %s got %s", tc.desc, tc.err, err))
 
 	}
@@ -57,9 +59,10 @@ func TestThingSave(t *testing.T) {
 func TestThingID(t *testing.T) {
 	thingCache := redis.NewThingCache(redisClient)
 
-	key := uuid.New().ID()
+	key, err := uuid.New().ID()
+	require.Nil(t, err, fmt.Sprintf("got unexpected error: %s", err))
 	id := "123"
-	err := thingCache.Save(key, id)
+	err = thingCache.Save(context.Background(), key, id)
 	require.Nil(t, err, fmt.Sprintf("Save thing to cache: expected nil got %s", err))
 
 	cases := map[string]struct {
@@ -80,7 +83,7 @@ func TestThingID(t *testing.T) {
 	}
 
 	for desc, tc := range cases {
-		cacheID, err := thingCache.ID(tc.key)
+		cacheID, err := thingCache.ID(context.Background(), tc.key)
 		assert.Equal(t, tc.ID, cacheID, fmt.Sprintf("%s: expected %s got %s\n", desc, tc.ID, cacheID))
 		assert.Equal(t, tc.err, err, fmt.Sprintf("%s: expected %s got %s\n", desc, tc.err, err))
 	}
@@ -89,10 +92,11 @@ func TestThingID(t *testing.T) {
 func TestThingRemove(t *testing.T) {
 	thingCache := redis.NewThingCache(redisClient)
 
-	key := uuid.New().ID()
+	key, err := uuid.New().ID()
+	require.Nil(t, err, fmt.Sprintf("got unexpected error: %s", err))
 	id := "123"
 	id2 := "321"
-	thingCache.Save(key, id)
+	thingCache.Save(context.Background(), key, id)
 
 	cases := []struct {
 		desc string
@@ -112,7 +116,7 @@ func TestThingRemove(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		err := thingCache.Remove(tc.ID)
+		err := thingCache.Remove(context.Background(), tc.ID)
 		assert.Equal(t, tc.err, err, fmt.Sprintf("%s: expected %s got %s\n", tc.desc, tc.err, err))
 	}
 

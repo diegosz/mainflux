@@ -1,4 +1,5 @@
 # This script contains commands to be executed by the CI tool.
+NPROC=$(nproc)
 
 setup_protoc() {
 	echo "Setting up protoc..."
@@ -11,6 +12,16 @@ setup_protoc() {
 	go get -u github.com/golang/protobuf/protoc-gen-go \
 		github.com/gogo/protobuf/protoc-gen-gofast \
 		google.golang.org/grpc
+	
+	git -C $GOPATH/src/github.com/golang/protobuf/protoc-gen-go checkout v1.3.1
+	go install github.com/golang/protobuf/protoc-gen-go
+	
+	git -C $GOPATH/src/github.com/gogo/protobuf/protoc-gen-gofast checkout v1.2.1
+	go install github.com/gogo/protobuf/protoc-gen-gofast
+
+	git -C $GOPATH/src/google.golang.org/grpc checkout v1.20.1
+	go install google.golang.org/grpc
+
 	export PATH=$PATH:/usr/local/bin/protoc
 }
 
@@ -28,10 +39,11 @@ setup_mf() {
 	make proto
 	for p in $(ls *.pb.go); do
 		if ! cmp -s $p $p.tmp; then
-			echo "Proto file and generated Go file $p are out of cync!"
+			echo "Proto file and generated Go file $p are out of sync!"
 			exit 1
 		fi
 	done
+	make -j$NPROC
 }
 
 setup() {
@@ -53,10 +65,26 @@ run_test() {
 	done
 }
 
+install_qemu() {
+	echo "Installing qemu..."
+	MF_PATH=$GOPATH/src/github.com/mainflux/mainflux
+	cd $MF_PATH
+	sudo apt-get update && sudo apt-get -y install qemu-user-static
+	wget https://github.com/multiarch/qemu-user-static/releases/download/v2.11.1/qemu-arm-static.tar.gz  \
+		&& tar -xzf qemu-arm-static.tar.gz \
+		&& rm qemu-arm-static.tar.gz
+	sudo cp qemu-arm-static /usr/bin/
+}
+
 push() {
 	if test -n "$BRANCH_NAME" && test "$BRANCH_NAME" = "master"; then
 		echo "Pushing Docker images..."
-		make latest
+		make -j$NPROC latest
+		docker system prune -a -f
+		install_qemu
+		GOARCH=arm GOARM=7 make -j$NPROC latest
+		export DOCKER_CLI_EXPERIMENTAL=enabled
+		make latest_manifest
 	fi
 }
 

@@ -62,6 +62,12 @@ func MakeHandler(svc bootstrap.Service, reader bootstrap.ConfigReader) http.Hand
 		encodeResponse,
 		opts...))
 
+	r.Put("/things/configs/certs/:key", kithttp.NewServer(
+		updateCertEndpoint(svc),
+		decodeUpdateCertRequest,
+		encodeResponse,
+		opts...))
+
 	r.Put("/things/configs/connections/:id", kithttp.NewServer(
 		updateConnEndpoint(svc),
 		decodeUpdateConnRequest,
@@ -81,9 +87,15 @@ func MakeHandler(svc bootstrap.Service, reader bootstrap.ConfigReader) http.Hand
 		opts...))
 
 	r.Get("/things/bootstrap/:external_id", kithttp.NewServer(
-		bootstrapEndpoint(svc, reader),
+		bootstrapEndpoint(svc, reader, false),
 		decodeBootstrapRequest,
 		encodeResponse,
+		opts...))
+
+	r.Get("/things/bootstrap/secure/:external_id", kithttp.NewServer(
+		bootstrapEndpoint(svc, reader, true),
+		decodeBootstrapRequest,
+		encodeSecureRes,
 		opts...))
 
 	r.Put("/things/state/:id", kithttp.NewServer(
@@ -124,6 +136,20 @@ func decodeUpdateRequest(_ context.Context, r *http.Request) (interface{}, error
 
 	req := updateReq{key: r.Header.Get("Authorization")}
 	req.id = bone.GetValue(r, "id")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+func decodeUpdateCertRequest(_ context.Context, r *http.Request) (interface{}, error) {
+	if !strings.Contains(r.Header.Get("Content-Type"), contentType) {
+		return nil, errUnsupportedContentType
+	}
+
+	req := updateCertReq{key: r.Header.Get("Authorization")}
+	req.thingKey = bone.GetValue(r, "key")
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		return nil, err
 	}
@@ -236,6 +262,17 @@ func encodeResponse(_ context.Context, w http.ResponseWriter, response interface
 	}
 
 	return json.NewEncoder(w).Encode(response)
+}
+
+func encodeSecureRes(_ context.Context, w http.ResponseWriter, response interface{}) error {
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(http.StatusOK)
+	if b, ok := response.([]byte); ok {
+		if _, err := w.Write(b); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func encodeError(_ context.Context, err error, w http.ResponseWriter) {

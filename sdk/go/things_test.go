@@ -14,11 +14,12 @@ import (
 	"testing"
 
 	sdk "github.com/mainflux/mainflux/sdk/go"
+	"github.com/opentracing/opentracing-go/mocktracer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mainflux/mainflux/things"
-	httpapi "github.com/mainflux/mainflux/things/api/http"
+	httpapi "github.com/mainflux/mainflux/things/api/things/http"
 	"github.com/mainflux/mainflux/things/mocks"
 )
 
@@ -53,7 +54,7 @@ func newThingsService(tokens map[string]string) things.Service {
 }
 
 func newThingsServer(svc things.Service) *httptest.Server {
-	mux := httpapi.MakeHandler(svc)
+	mux := httpapi.MakeHandler(mocktracer.New(), svc)
 	return httptest.NewServer(mux)
 }
 
@@ -204,6 +205,7 @@ func TestThings(t *testing.T) {
 		limit    uint64
 		err      error
 		response []sdk.Thing
+		name     string
 	}{
 		{
 			desc:     "get a list of things",
@@ -263,7 +265,7 @@ func TestThings(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		page, err := mainfluxSDK.Things(tc.token, tc.offset, tc.limit)
+		page, err := mainfluxSDK.Things(tc.token, tc.offset, tc.limit, tc.name)
 		assert.Equal(t, tc.err, err, fmt.Sprintf("%s: expected error %s, got %s", tc.desc, tc.err, err))
 		assert.Equal(t, tc.response, page.Things, fmt.Sprintf("%s: expected response channel %s, got %s", tc.desc, tc.response, page.Things))
 	}

@@ -132,7 +132,7 @@ type SDK interface {
 	CreateThing(thing Thing, token string) (string, error)
 
 	// Things returns page of things.
-	Things(token string, offset, limit uint64) (ThingsPage, error)
+	Things(token string, offset, limit uint64, name string) (ThingsPage, error)
 
 	// ThingsByChannel returns page of things that are connected to specified
 	// channel.
@@ -157,7 +157,7 @@ type SDK interface {
 	CreateChannel(channel Channel, token string) (string, error)
 
 	// Channels returns page of channels.
-	Channels(token string, offset, limit uint64) (ChannelsPage, error)
+	Channels(token string, offset, limit uint64, name string) (ChannelsPage, error)
 
 	// ChannelsByThing returns page of channels that are connected to specified
 	// thing.
